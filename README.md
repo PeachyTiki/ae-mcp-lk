@@ -154,6 +154,8 @@ Add to `~/.copilot/mcp-config.json` under `mcpServers`:
 2. Open **Window > Extensions > AE-MCP**
 3. The panel will auto-start and begin listening for commands
 
+**OneDrive-redirected Documents:** the server and the panel exchange files in `<Documents>\ae-mcp-commands`. The server resolves the real Documents path from the Windows registry (the same one After Effects uses). If the two ever disagree, set `AE_MCP_DOCUMENTS_DIR` in the server's environment to the folder After Effects reports as Documents.
+
 ---
 
 ## Tool Categories

@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { Logger, MCPResponse, PendingCommand, CommandFile, ResponseFile } from '../types/mcpTypes.js';
 
 // Default logger if none provided
@@ -17,6 +18,34 @@ const defaultLogger: Logger = {
   warn: (msg: string, meta?: any) => console.warn('[WARN]', msg, meta || ''),
   error: (msg: string, meta?: any) => console.error('[ERROR]', msg, meta || '')
 };
+
+/**
+ * The CEP panel uses ExtendScript's Folder.myDocuments, which follows the
+ * Windows "Documents" shell folder. That differs from ~/Documents when
+ * Documents is redirected (for example to OneDrive), so resolve the same one.
+ * AE_MCP_DOCUMENTS_DIR overrides everything.
+ */
+export function resolveDocumentsPath(): string {
+  const override = process.env.AE_MCP_DOCUMENTS_DIR;
+  if (override) return override;
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync(
+        'reg',
+        ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', '/v', 'Personal'],
+        { encoding: 'utf8', timeout: 3000, windowsHide: true }
+      );
+      const match = /Personal\s+REG_(?:EXPAND_)?SZ\s+(.+)/.exec(out);
+      if (match) {
+        const expanded = match[1].trim().replace(/%([^%]+)%/g, (_, name) => process.env[name] ?? `%${name}%`);
+        if (!expanded.includes('%') && fs.existsSync(expanded)) return expanded;
+      }
+    } catch {
+      // fall through to the default
+    }
+  }
+  return path.join(os.homedir(), 'Documents');
+}
 
 export class FileCommunicator {
   private commandsFolder: string;
@@ -41,8 +70,7 @@ export class FileCommunicator {
     this.clientPrefix = `client_${process.pid}_${Date.now()}`;
 
     // Set up commands folder in user's Documents
-    const documentsPath = path.join(os.homedir(), 'Documents');
-    this.commandsFolder = path.join(documentsPath, 'ae-mcp-commands');
+    this.commandsFolder = path.join(resolveDocumentsPath(), 'ae-mcp-commands');
 
     this.logger.info('FileCommunicator initialized', {
       clientPrefix: this.clientPrefix,
