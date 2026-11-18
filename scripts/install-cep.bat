@@ -19,6 +19,10 @@ if not exist "%EXTENSION_DIR%" (
 
 REM Enable unsigned extensions (required for development)
 echo Enabling unsigned extensions for debugging...
+reg add "HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.16" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul 2>&1
+reg add "HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.15" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul 2>&1
+reg add "HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.14" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul 2>&1
+reg add "HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.13" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul 2>&1
 reg add "HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.12" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul 2>&1
 reg add "HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.11" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul 2>&1
 reg add "HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.10" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul 2>&1
@@ -59,4 +63,4 @@ echo.
 echo Note: If After Effects is running, you may need to restart it.
 echo.
 
-pause
+if /i not "%~1"=="/nopause" pause

@@ -22,6 +22,16 @@ import { FileCommunicator } from './ae-integration/file-communicator.js';
 import * as generators from './ae-integration/scriptGenerator.js';
 import { createErrorResponse } from './ae-integration/errorHandler.js';
 import { Logger } from './types/mcpTypes.js';
+import {
+  CORE_TOOL_NAMES,
+  META_TOOLS,
+  SERVER_INSTRUCTIONS,
+  checkScript,
+  getToolMode,
+  searchCatalog,
+  type CatalogEntry
+} from './lean/meta.js';
+import { RECIPES, buildRecipeScript, findRecipe } from './lean/recipes.js';
 
 // Create logger
 const logger: Logger = {
@@ -1964,43 +1974,58 @@ const communicator = new FileCommunicator({ logger });
 const server = new Server(
   {
     name: 'ae-mcp',
-    version: '1.0.0'
+    version: '1.1.0'
   },
   {
     capabilities: {
       tools: {},
       resources: {},
       prompts: {}
-    }
+    },
+    instructions: SERVER_INSTRUCTIONS
   }
 );
 
-// List tools handler
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: TOOLS.map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema
-    }))
-  };
-});
+type ToolResponse = { content: Array<{ type: 'text'; text: string }>; isError: boolean };
 
-// Call tool handler
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+function textResponse(payload: unknown, isError: boolean): ToolResponse {
+  return { content: [{ type: 'text', text: JSON.stringify(payload) }], isError };
+}
 
+function errorResponse(error: unknown): ToolResponse {
+  return textResponse(createErrorResponse(error instanceof Error ? error : String(error)), true);
+}
+
+const META_TOOL_NAMES = new Set(META_TOOLS.map(tool => tool.name));
+
+// Everything the search tool can find: all typed tools plus the recipes.
+function buildCatalog(): CatalogEntry[] {
+  const listed = new Set(CORE_TOOL_NAMES);
+  const entries: CatalogEntry[] = TOOLS.map(tool => ({
+    name: tool.name,
+    kind: 'tool' as const,
+    description: tool.description ?? '',
+    inputSchema: tool.inputSchema,
+    listed: listed.has(tool.name)
+  }));
+  for (const recipe of RECIPES) {
+    entries.push({
+      name: recipe.name,
+      kind: 'recipe',
+      description: recipe.summary + ' Run with ae_recipe (action=run).',
+      inputSchema: recipe.inputSchema,
+      listed: false,
+      extraTerms: recipe.tags
+    });
+  }
+  return entries;
+}
+
+// Run one typed tool by name: validate, generate the script, execute in AE.
+async function invokeTool(name: string, args: unknown): Promise<ToolResponse> {
   const tool = toolMap.get(name);
   if (!tool) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ success: false, error: `Unknown tool: ${name}` })
-        }
-      ],
-      isError: true
-    };
+    return textResponse({ success: false, error: `Unknown tool: ${name}. Use ae_find_tool to search.` }, true);
   }
 
   try {
@@ -2020,28 +2045,101 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Execute in After Effects
     const result = await communicator.executeScript(script);
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result)
-        }
-      ],
-      isError: !result.success
-    };
+    return textResponse(result, !result.success);
   } catch (error) {
-    const errorResponse = createErrorResponse(error instanceof Error ? error : String(error));
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(errorResponse)
-        }
-      ],
-      isError: true
-    };
+    return errorResponse(error);
   }
+}
+
+async function handleMetaTool(name: string, args: any): Promise<ToolResponse> {
+  try {
+    switch (name) {
+      case 'run_script': {
+        if (typeof args?.script !== 'string' || !args.script.trim()) {
+          throw new Error('run_script needs a non-empty "script" string');
+        }
+        const blocked = checkScript(args.script, args.allowSystem === true);
+        if (blocked) throw new Error(blocked);
+        const result = await communicator.executeScript(args.script);
+        return textResponse(result, !result.success);
+      }
+      case 'ae_find_tool': {
+        if (typeof args?.query !== 'string' || !args.query.trim()) {
+          throw new Error('ae_find_tool needs a non-empty "query" string');
+        }
+        const limit = Number.isInteger(args.limit) ? Math.min(Math.max(args.limit, 1), 15) : 6;
+        const matches = searchCatalog(args.query, buildCatalog(), limit).map(entry => ({
+          name: entry.name,
+          kind: entry.kind,
+          call: entry.kind === 'recipe' ? 'ae_recipe' : entry.listed ? 'direct' : 'ae_call',
+          description: entry.description,
+          inputSchema: entry.inputSchema
+        }));
+        return textResponse({ success: true, query: args.query, matches }, false);
+      }
+      case 'ae_call': {
+        if (typeof args?.tool !== 'string') throw new Error('ae_call needs a "tool" name');
+        if (META_TOOL_NAMES.has(args.tool)) {
+          throw new Error(`${args.tool} is a top-level tool; call it directly instead of through ae_call`);
+        }
+        return await invokeTool(args.tool, args.arguments);
+      }
+      case 'ae_recipe': {
+        const action = args?.action;
+        if (action === 'list') {
+          return textResponse({
+            success: true,
+            recipes: RECIPES.map(r => ({ name: r.name, summary: r.summary, tags: r.tags }))
+          }, false);
+        }
+        if (action === 'describe') {
+          const recipe = findRecipe(args?.name);
+          if (!recipe) throw new Error(`Unknown recipe: ${args?.name}. Available: ${RECIPES.map(r => r.name).join(', ')}`);
+          return textResponse({
+            success: true,
+            name: recipe.name,
+            summary: recipe.summary,
+            inputSchema: recipe.inputSchema
+          }, false);
+        }
+        if (action === 'run') {
+          const script = buildRecipeScript(args?.name, args?.params);
+          const result = await communicator.executeScript(script);
+          return textResponse(result, !result.success);
+        }
+        throw new Error('ae_recipe action must be list, describe or run');
+      }
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+// List tools handler: lean mode lists the core tools and the 4 meta tools,
+// full mode lists every typed tool plus the meta tools.
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const typed = getToolMode() === 'full'
+    ? TOOLS
+    : TOOLS.filter(tool => CORE_TOOL_NAMES.includes(tool.name));
+  return {
+    tools: [
+      ...META_TOOLS,
+      ...typed.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema
+      }))
+    ]
+  };
+});
+
+// Call tool handler. Hidden tools stay callable by name in every mode.
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+  if (META_TOOL_NAMES.has(name)) return handleMetaTool(name, args);
+  return invokeTool(name, args);
 });
 
 // List resources handler

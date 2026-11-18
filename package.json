@@ -1,7 +1,7 @@
 {
   "name": "ae-mcp",
-  "version": "1.0.0",
-  "description": "Advanced After Effects MCP server for motion graphics productivity",
+  "version": "1.1.0",
+  "description": "After Effects MCP server: lean tool list, ~100 hidden tools via ae_find_tool/ae_call, raw run_script, and a brand recipe library",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -32,6 +32,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
+    "acorn": "^8.19.0",
     "tsx": "^4.23.1",
     "typescript": "^5.3.0"
   },

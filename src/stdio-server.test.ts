@@ -3,17 +3,21 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
+import * as acorn from 'acorn';
 import * as schemas from '@modelcontextprotocol/sdk/types.js';
 import * as validator from '@modelcontextprotocol/sdk/validation/ajv';
 import * as generators from './ae-integration/scriptGenerator.js';
 import * as errors from './ae-integration/errorHandler.js';
+import * as meta from './lean/meta.js';
+import * as recipes from './lean/recipes.js';
 
 type Handler = (request: any) => Promise<any>;
 type Tool = { name: string; inputSchema: any; generator: (params: any) => string };
 
 // Load the real registration/handler code with only the transport and AE IPC
 // mocked. This exercises dispatch without starting AE or creating command files.
-function createServer() {
+function createServer(mode: 'full' | 'lean' = 'full') {
+  process.env.AE_MCP_TOOL_MODE = mode;
   const handlers = new Map<unknown, Handler>();
   const scripts: string[] = [];
   class Server {
@@ -34,7 +38,9 @@ function createServer() {
     '@modelcontextprotocol/sdk/validation/ajv': validator,
     './ae-integration/file-communicator.js': { FileCommunicator },
     './ae-integration/scriptGenerator.js': generators,
-    './ae-integration/errorHandler.js': errors
+    './ae-integration/errorHandler.js': errors,
+    './lean/meta.js': meta,
+    './lean/recipes.js': recipes
   };
   const source = readFileSync(new URL('./stdio-server.ts', import.meta.url), 'utf8');
   const compiled = ts.transpileModule(source + '\nexport { TOOLS };', {
@@ -63,7 +69,9 @@ function createServer() {
 describe('MCP tool registration and dispatch', () => {
   it('registers every generator exactly once with a matching name', async () => {
     const server = createServer();
-    const { tools } = await server.list();
+    const { tools: listed } = await server.list();
+    assert.equal(listed.length, 102 + meta.META_TOOLS.length);
+    const tools = listed.filter((tool: Tool) => !meta.META_TOOLS.some(m => m.name === tool.name));
     assert.equal(tools.length, 102);
     assert.equal(new Set(tools.map((tool: Tool) => tool.name)).size, tools.length);
     const normalized = (name: string) => name.replace(/_/g, '').toLowerCase();
@@ -301,3 +309,87 @@ describe('MCP tool registration and dispatch', () => {
     assert.equal(server.scripts.length, 0);
   });
 });
+
+describe('lean tool surface', () => {
+  it('lists only core tools plus meta tools in lean mode, all tools in full mode', async () => {
+    const lean = (await createServer('lean').list()).tools.map((t: Tool) => t.name);
+    for (const name of ['run_script', 'ae_find_tool', 'ae_call', 'ae_recipe', ...meta.CORE_TOOL_NAMES]) {
+      assert.ok(lean.includes(name), name);
+    }
+    assert.equal(lean.length, meta.META_TOOLS.length + meta.CORE_TOOL_NAMES.length);
+    assert.ok(!lean.includes('add_mask'));
+    assert.equal((await createServer('full').list()).tools.length, 102 + meta.META_TOOLS.length);
+  });
+
+  it('core tool names all exist', () => {
+    const names = new Set(createServer().tools.map(t => t.name));
+    for (const name of meta.CORE_TOOL_NAMES) assert.ok(names.has(name), name);
+  });
+
+  it('ae_find_tool finds hidden tools and recipes with schemas', async () => {
+    const server = createServer('lean');
+    const mask = JSON.parse((await server.call('ae_find_tool', { query: 'mask path' })).content[0].text);
+    assert.ok(mask.matches.some((m: any) => m.name === 'add_mask' && m.call === 'ae_call' && m.inputSchema));
+    const sticker = JSON.parse((await server.call('ae_find_tool', { query: 'sticker pop sound' })).content[0].text);
+    assert.equal(sticker.matches[0].name, 'sticker_pop');
+    assert.equal(sticker.matches[0].call, 'ae_recipe');
+    assert.equal((await server.call('ae_find_tool', { query: '' })).isError, true);
+  });
+
+  it('ae_call runs hidden tools, validates them and refuses meta tools', async () => {
+    const server = createServer('lean');
+    assert.equal((await server.call('ae_call', { tool: 'list_masks', arguments: { compName: 'Test', layerIndex: 1 } })).isError, false);
+    assert.equal(server.scripts.length, 1);
+    assert.equal((await server.call('ae_call', { tool: 'add_shape_operator', arguments: { operator: 'invalid' } })).isError, true);
+    assert.equal((await server.call('ae_call', { tool: 'ae_call', arguments: {} })).isError, true);
+    assert.equal((await server.call('ae_call', { tool: 'nope' })).isError, true);
+    assert.equal(server.scripts.length, 1);
+  });
+
+  it('hidden tools stay callable by name in lean mode', async () => {
+    const server = createServer('lean');
+    assert.equal((await server.call('list_masks', { compName: 'Test', layerIndex: 1 })).isError, false);
+  });
+
+  it('run_script sends the script unchanged and blocks system access by default', async () => {
+    const server = createServer('lean');
+    const script = 'var c = app.project.activeItem; ({ name: c.name });';
+    assert.equal((await server.call('run_script', { script })).isError, false);
+    assert.equal(server.scripts[0], script);
+    assert.equal((await server.call('run_script', { script: 'system.callSystem("cmd")' })).isError, true);
+    assert.equal((await server.call('run_script', { script: 'app.quit()' })).isError, true);
+    assert.equal((await server.call('run_script', { script: '' })).isError, true);
+    assert.equal(server.scripts.length, 1);
+    assert.equal((await server.call('run_script', { script: 'app.quit()', allowSystem: true })).isError, false);
+  });
+
+  it('ae_recipe lists, describes, validates and runs', async () => {
+    const server = createServer('lean');
+    const list = JSON.parse((await server.call('ae_recipe', { action: 'list' })).content[0].text);
+    assert.equal(list.recipes.length, recipes.RECIPES.length);
+    assert.equal((await server.call('ae_recipe', { action: 'describe', name: 'push_in' })).isError, false);
+    assert.equal((await server.call('ae_recipe', { action: 'describe', name: 'nope' })).isError, true);
+    assert.equal((await server.call('ae_recipe', { action: 'run', name: 'sticker_pop', params: {} })).isError, true);
+    assert.equal((await server.call('ae_recipe', { action: 'run', name: 'sticker_pop', params: { layerIndex: 1, duration: -1 } })).isError, true);
+    assert.equal(server.scripts.length, 0);
+    assert.equal((await server.call('ae_recipe', { action: 'run', name: 'sticker_pop', params: { layerIndex: 1 } })).isError, false);
+    assert.equal(server.scripts.length, 1);
+  });
+
+  it('every recipe script is valid ES3 and params are embedded safely', () => {
+    const params: Record<string, object> = {
+      sticker_pop: { layerName: 'a\u2028b"quote' },
+      wiggle_position: { layerIndex: 2 },
+      push_in: { layerIndex: 1, focusX: 0.5, focusY: 0.4 },
+      caption_layer: { text: 'LIEBLINGSKORB' },
+      captions_from_srt: { srt: '1\n00:00:00,000 --> 00:00:01,000\nHallo' },
+      fade_in_out: { layerIndex: 1 }
+    };
+    for (const recipe of recipes.RECIPES) {
+      const script = recipes.buildRecipeScript(recipe.name, params[recipe.name]);
+      assert.doesNotThrow(() => acorn.parse(script, { ecmaVersion: 3 }), recipe.name);
+      assert.ok(!script.includes('\u2028'), recipe.name);
+    }
+  });
+});
+

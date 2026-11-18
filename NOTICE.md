@@ -13,8 +13,8 @@ Extend the upstream server for LIEBLINGSKORB ad work:
 
 ## Status
 
-Planned. Only the upstream code exists so far. Not yet tested on After Effects 2026/2027.
+Implemented in v1.1.0: `run_script`, `ae_find_tool`, `ae_call`, `ae_recipe` (6 recipes), a lean default tool list (`AE_MCP_TOOL_MODE=full` for all tools). The recipes were run once in After Effects 2026 through `AfterFX.exe -r`; the CEP bridge itself was not changed. Not tested on After Effects 2027.
 
 ## Code borrowed from other projects
 
-None yet. Anything copied later must be listed here with source URL and license.
+None. The meta tools and recipes are original code. Only the idea of a raw script tool comes from other servers (for example Dakkshin/after-effects-mcp); no code was copied.

@@ -5,15 +5,43 @@
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT License"/>
 </p>
 
-<h1 align="center">AE-MCP</h1>
+<h1 align="center">AE-MCP (LK fork)</h1>
 <p align="center"><strong>After Effects Model Context Protocol Server</strong></p>
-<p align="center">Automate Adobe After Effects with AI through 70+ MCP tools</p>
+<p align="center">Lean tool list, ~100 typed tools on demand, raw ExtendScript, and a brand recipe library</p>
 
 ---
 
-## Overview
+## What this fork adds
 
-AE-MCP is a comprehensive MCP server that enables AI assistants like Claude to directly control Adobe After Effects. It provides **70+ tools** covering the full motion graphics workflow — from creating compositions to applying professional effects and expressions.
+Based on [ishu86/after-effects-mcp](https://github.com/ishu86/after-effects-mcp) (MIT, see `NOTICE.md`). The 102 upstream tools are unchanged. Added:
+
+| Addition | Purpose |
+|----------|---------|
+| Lean tool list (default) | The AI sees 4 meta tools + 10 core tools instead of 102, which saves context |
+| `ae_find_tool` | Keyword search over all tools and recipes; returns exact input schemas |
+| `ae_call` | Runs any hidden tool by name (hidden tools are also callable directly) |
+| `run_script` | Raw ExtendScript (ES3) for granular control. Last expression is the result. Blocks `system.callSystem` and `app.quit` unless `allowSystem=true` |
+| `ae_recipe` | `list` / `describe` / `run` for: `sticker_pop`, `wiggle_position`, `push_in`, `caption_layer`, `captions_from_srt`, `fade_in_out` |
+| Server instructions | Tell the AI the order: core tool, then `ae_find_tool`, then recipe, then `run_script` |
+
+Set `AE_MCP_TOOL_MODE=full` in the server environment to list all 102 tools plus the meta tools.
+
+Core tools listed in lean mode: `get_project_info`, `list_compositions`, `get_comp_report`, `list_layers`, `create_composition`, `import_footage`, `add_av_layer`, `add_text_layer`, `render_frame`, `save_project`.
+
+Every call runs in one undo group in After Effects, so Ctrl+Z reverts it.
+
+### Testing status
+
+- 125 unit tests pass (`npm test`), including an ES3 syntax check of every recipe script.
+- All 6 recipes were run once in After Effects 2026 through `AfterFX.exe -r` against a scratch project; every one completed and created the expected keyframes, expressions and layers. Visual quality (easing, caption placement) was not inspected.
+- The CEP panel bridge (file polling in `cep-extension`) is upstream code, with no changes in this fork.
+- Recipe wiggle is an expression approximation of Premiere's Wiggle effect (2/2/26); it is not identical.
+
+---
+
+## Overview (upstream)
+
+AE-MCP is a comprehensive MCP server that enables AI assistants like Claude to directly control Adobe After Effects. It provides **102 tools** covering the full motion graphics workflow — from creating compositions to applying professional effects and expressions.
 
 ### Key Features
 
@@ -41,8 +69,8 @@ AE-MCP is a comprehensive MCP server that enables AI assistants like Claude to d
 ### Step 1: Install the MCP Server
 
 ```bash
-git clone https://github.com/ishu86/after-effects-mcp.git
-cd after-effects-mcp
+git clone https://github.com/PeachyTiki/ae-mcp-lk.git
+cd ae-mcp-lk
 npm install
 npm run build
 ```
@@ -103,6 +131,21 @@ cp -r SKILL/* ~/.claude/skills/
 ```
 
 The Claude Code skill provides specialized knowledge about After Effects workflows, property formats, and best practices. See [`SKILL/SKILL.md`](SKILL/SKILL.md) for details.
+</details>
+
+<details>
+<summary><strong>GitHub Copilot (CLI / app)</strong></summary>
+
+Add to `~/.copilot/mcp-config.json` under `mcpServers`:
+
+```json
+"ae-mcp": {
+  "type": "local",
+  "command": "node",
+  "args": ["C:\\path\\to\\ae-mcp-lk\\dist\\index.js"],
+  "tools": ["*"]
+}
+```
 </details>
 
 ### Step 4: Launch After Effects
